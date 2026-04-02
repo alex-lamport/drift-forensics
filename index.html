@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>λ Forensics — Drift Protocol Exploit · On-Chain Investigation</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #080b0f;
+    --bg2: #0d1117;
+    --bg3: #111820;
+    --border: #1e2d3d;
+    --red: #ff3b3b;
+    --red2: #c0392b;
+    --amber: #f39c12;
+    --green: #00d084;
+    --blue: #00b4d8;
+    --dim: #8899aa;
+    --text: #ccd6e0;
+    --bright: #eef4fa;
+    --mono: 'Share Tech Mono', monospace;
+    --display: 'Syne', sans-serif;
+    --body: 'DM Mono', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--body);
+    font-size: 13px;
+    line-height: 1.7;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* Noise texture */
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    opacity: 0.4;
+    z-index: 999;
+  }
+
+  /* HEADER */
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding: 28px 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    background: rgba(8,11,15,0.95);
+    backdrop-filter: blur(12px);
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: var(--bright);
+  }
+  .logo span { color: var(--red); }
+
+  .header-meta {
+    font-size: 11px;
+    color: var(--dim);
+    text-align: right;
+    line-height: 1.8;
+  }
+
+  .status-pill {
+    display: inline-block;
+    background: rgba(255,59,59,0.15);
+    border: 1px solid rgba(255,59,59,0.4);
+    color: var(--red);
+    font-size: 10px;
+    padding: 2px 10px;
+    border-radius: 2px;
+    animation: blink 1.5s ease-in-out infinite;
+    margin-left: 8px;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* LANGUAGE TOGGLE */
+  .lang-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-left: 20px;
+    flex-shrink: 0;
+  }
+  .lang-btn {
+    background: transparent;
+    border: none;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    transition: all 0.15s;
+  }
+  .lang-btn.active {
+    background: var(--red);
+    color: #fff;
+  }
+  .lang-btn:hover:not(.active) {
+    background: var(--bg3);
+    color: var(--text);
+  }
+  .lang-sep {
+    width: 1px;
+    height: 100%;
+    background: var(--border);
+    align-self: stretch;
+  }
+  /* Hide/show by language */
+  [data-lang] { display: none; }
+  body.lang-it [data-lang="it"] { display: revert; }
+  body.lang-en [data-lang="en"] { display: revert; }
+  /* Inline spans: use inline instead of revert */
+  span[data-lang] { display: none; }
+  body.lang-it span[data-lang="it"] { display: inline; }
+  body.lang-en span[data-lang="en"] { display: inline; }
+
+  /* MAIN LAYOUT */
+  .main { max-width: 1400px; margin: 0 auto; padding: 0 48px 80px; }
+
+  /* HERO */
+  .hero {
+    padding: 60px 0 40px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 60px;
+  }
+  .hero-label {
+    font-size: 11px;
+    color: var(--red);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+    font-family: var(--mono);
+  }
+  .hero h1 {
+    font-family: var(--display);
+    font-size: 52px;
+    font-weight: 800;
+    line-height: 1.05;
+    color: var(--bright);
+    letter-spacing: -2px;
+    margin-bottom: 20px;
+  }
+  .hero h1 em { color: var(--red); font-style: normal; }
+  .hero-sub {
+    font-size: 15px;
+    color: var(--dim);
+    max-width: 680px;
+    line-height: 1.6;
+    font-weight: 300;
+  }
+
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+    background: var(--border);
+    margin-top: 40px;
+    border: 1px solid var(--border);
+  }
+  .stat {
+    background: var(--bg2);
+    padding: 20px 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 3px; height: 100%;
+    background: var(--red);
+    opacity: 0.7;
+  }
+  .stat-label { font-size: 10px; color: var(--dim); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 6px; }
+  .stat-value { font-family: var(--display); font-size: 26px; font-weight: 700; color: var(--bright); }
+  .stat-sub { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+  /* SECTIONS */
+  .section { margin-bottom: 60px; }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .section-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--red);
+    background: rgba(255,59,59,0.1);
+    border: 1px solid rgba(255,59,59,0.3);
+    padding: 3px 8px;
+  }
+  .section-title {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--bright);
+    letter-spacing: -0.5px;
+  }
+
+  /* TIMELINE */
+  .timeline { position: relative; padding-left: 32px; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 8px; top: 0; bottom: 0;
+    width: 1px;
+    background: linear-gradient(to bottom, var(--red), var(--border));
+  }
+  .tl-item {
+    position: relative;
+    padding: 0 0 32px 24px;
+    animation: fadeIn 0.5s ease both;
+  }
+  .tl-dot {
+    position: absolute;
+    left: -28px;
+    top: 4px;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid var(--red);
+  }
+  .tl-dot.amber { border-color: var(--amber); }
+  .tl-dot.green { border-color: var(--green); }
+  .tl-dot.blue { border-color: var(--blue); }
+  .tl-dot.alert { background: var(--red); animation: blink 1s infinite; }
+  .tl-time {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    margin-bottom: 4px;
+  }
+  .tl-event {
+    color: var(--bright);
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .tl-detail { color: var(--dim); font-size: 12px; }
+
+  /* MONEY FLOW DIAGRAM */
+  .flow-container {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 32px;
+    position: relative;
+    overflow: hidden;
+  }
+  .flow-container::before {
+    content: 'FUND FLOW ANALYSIS';
+    position: absolute;
+    top: 12px; right: 16px;
+    font-size: 9px;
+    color: var(--dim);
+    letter-spacing: 3px;
+  }
+  #flowChart { width: 100%; height: 520px; }
+
+  /* WALLET CARDS */
+  .wallets-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 2px;
+    background: var(--border);
+  }
+  .wallet-card {
+    background: var(--bg2);
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+    transition: background 0.2s;
+  }
+  .wallet-card:hover { background: var(--bg3); }
+  .wallet-card::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+  }
+  .wallet-card.red::after { background: var(--red); }
+  .wallet-card.amber::after { background: var(--amber); }
+  .wallet-card.blue::after { background: var(--blue); }
+  .wallet-card.green::after { background: var(--green); }
+
+  .wallet-chain {
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .wallet-chain.sol { color: #9945FF; }
+  .wallet-chain.eth { color: #627EEA; }
+
+  .wallet-label {
+    font-family: var(--display);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--bright);
+    margin-bottom: 8px;
+  }
+  .wallet-addr {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    word-break: break-all;
+    margin-bottom: 12px;
+    padding: 8px;
+    background: rgba(0,0,0,0.3);
+    border-left: 2px solid var(--border);
+  }
+  .wallet-meta {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .wallet-kv { }
+  .wallet-k { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+  .wallet-v { font-size: 14px; color: var(--bright); font-weight: 500; }
+  .wallet-v.red { color: var(--red); }
+  .wallet-v.amber { color: var(--amber); }
+  .wallet-v.green { color: var(--green); }
+
+  .badge {
+    display: inline-block;
+    font-size: 9px;
+    padding: 2px 6px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border-radius: 2px;
+    margin-left: 6px;
+  }
+  .badge.new { background: rgba(255,59,59,0.2); color: var(--red); border: 1px solid rgba(255,59,59,0.4); }
+  .badge.live { background: rgba(0,208,132,0.2); color: var(--green); border: 1px solid rgba(0,208,132,0.4); animation: blink 1.2s infinite; }
+  .badge.known { background: rgba(243,156,18,0.2); color: var(--amber); border: 1px solid rgba(243,156,18,0.4); }
+
+  /* CHARTS */
+  .charts-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    background: var(--border);
+  }
+  .chart-box {
+    background: var(--bg2);
+    padding: 28px;
+  }
+  .chart-title {
+    font-family: var(--display);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--bright);
+    margin-bottom: 6px;
+  }
+  .chart-sub { font-size: 11px; color: var(--dim); margin-bottom: 20px; }
+  canvas { max-height: 260px; }
+
+  /* FINDINGS */
+  .findings-list { display: flex; flex-direction: column; gap: 2px; background: var(--border); }
+  .finding {
+    background: var(--bg2);
+    padding: 24px 28px;
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 20px;
+    align-items: start;
+    transition: background 0.2s;
+  }
+  .finding:hover { background: var(--bg3); }
+  .finding-num {
+    font-family: var(--display);
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--red);
+    opacity: 0.5;
+    line-height: 1;
+    padding-top: 2px;
+  }
+  .finding-title {
+    font-family: var(--display);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--bright);
+    margin-bottom: 8px;
+  }
+  .finding-body { font-size: 12px; color: var(--dim); line-height: 1.8; }
+  .finding-body strong { color: var(--text); }
+  .finding-body code {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: rgba(0,0,0,0.4);
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: var(--amber);
+  }
+
+  /* QUESTIONS */
+  .questions-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    background: var(--border);
+  }
+  .question-card {
+    background: var(--bg2);
+    padding: 24px;
+    border-top: 2px solid var(--amber);
+  }
+  .question-mark {
+    font-family: var(--display);
+    font-size: 48px;
+    font-weight: 800;
+    color: var(--amber);
+    opacity: 0.2;
+    line-height: 1;
+    margin-bottom: 8px;
+  }
+  .question-text {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.6;
+  }
+
+  /* FOOTER */
+  .report-footer {
+    border-top: 1px solid var(--border);
+    padding: 32px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--dim);
+    font-size: 11px;
+  }
+
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+
+  /* Animated glow on hover for flow nodes */
+  .node-glow { filter: drop-shadow(0 0 6px rgba(255,59,59,0.5)); }
+
+  /* Code block */
+  pre {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+    padding: 16px 20px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--green);
+    overflow-x: auto;
+    line-height: 1.8;
+    margin-top: 16px;
+  }
+  pre .comment { color: var(--dim); }
+  pre .addr { color: var(--amber); }
+  pre .value { color: var(--red); }
+  pre .label { color: var(--blue); }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="logo">λ <span>Forensics</span></div>
+  <div style="display:flex;align-items:center;gap:16px">
+    <div class="header-meta">
+      <span data-lang="it">DRIFT PROTOCOL EXPLOIT — INDAGINE ATTIVA</span><span data-lang="en">DRIFT PROTOCOL EXPLOIT — ACTIVE INVESTIGATION</span><br>
+      2 April 2026 · @alex_lamport
+      <span class="status-pill">● LIVE</span>
+    </div>
+    <div class="lang-toggle">
+      <button class="lang-btn active" id="btn-it" onclick="setLang('it')">IT</button>
+      <div class="lang-sep"></div>
+      <button class="lang-btn" id="btn-en" onclick="setLang('en')">EN</button>
+    </div>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- HERO -->
+  <section class="hero">
+    <p class="hero-label">On-Chain Forensic Report · Case DRF-2604</p>
+    <h1>The <em>$285M</em><br>Drift Exploit</h1>
+    <p class="hero-sub" data-lang="it">Ricostruzione completa del percorso dei fondi dai vault Solana alla rete di riciclaggio su Ethereum. Sei livelli di profondità. Infrastruttura attiva dal 2019. Fondi ancora in movimento.</p>
+    <p class="hero-sub" data-lang="en">Full money trail reconstruction from Solana vaults to Ethereum laundering network. Six layers deep. Infrastructure active since 2019. Funds still moving.</p>
+
+    <div class="stats-bar">
+      <div class="stat">
+        <div class="stat-label"><span data-lang="it">Totale Drenato</span><span data-lang="en">Total Drained</span></div>
+        <div class="stat-value">$285M</div>
+        <div class="stat-sub"><span data-lang="it">270.6M confermati on-chain</span><span data-lang="en">270.6M confirmed on-chain</span></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label"><span data-lang="it">Tempo Drain</span><span data-lang="en">Time to Drain</span></div>
+        <div class="stat-value">12 min</div>
+        <div class="stat-sub"><span data-lang="it">31 prelievi · 4 slot</span><span data-lang="en">31 withdrawals · 4 slots</span></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label"><span data-lang="it">Preparazione</span><span data-lang="en">Preparation</span></div>
+        <div class="stat-value">22 <span data-lang="it">gg</span><span data-lang="en">days</span></div>
+        <div class="stat-sub"><span data-lang="it">Token CVT + setup nonce</span><span data-lang="en">CVT token + nonce setup</span></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label"><span data-lang="it">Bridgiato CCTP</span><span data-lang="en">CCTP Bridged</span></div>
+        <div class="stat-value">$230M</div>
+        <div class="stat-sub"><span data-lang="it">Circle non ha congelato</span><span data-lang="en">Circle did not freeze</span></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label"><span data-lang="it">Età Infra</span><span data-lang="en">Infra Age</span></div>
+        <div class="stat-value">2019</div>
+        <div class="stat-sub"><span data-lang="it">Wallet ETH più vecchio trovato</span><span data-lang="en">Oldest ETH wallet found</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 1: TIMELINE -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">01</span>
+      <h2 class="section-title"><span data-lang="it">Timeline dell'Attacco</span><span data-lang="en">Attack Timeline</span></h2>
+    </div>
+    <div class="timeline">
+      <div class="tl-item">
+        <div class="tl-dot amber"></div>
+        <div class="tl-time">~10 <span data-lang="it">Marzo</span><span data-lang="en">March</span> 2026</div>
+        <div class="tl-event"><span data-lang="it">CarbonVote Token ($CVT) creato su Solana</span><span data-lang="en">CarbonVote Token ($CVT) created on Solana</span></div>
+        <div class="tl-detail"><span data-lang="it">750M unità coniate. $500 seedati su Raydium. Wallet:</span><span data-lang="en">750M units minted. $500 seeded on Raydium. Wallet:</span> <span style="color:var(--amber);font-family:var(--mono)">FnYXwy7qEt...</span> (Token Creator)</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot amber"></div>
+        <div class="tl-time">10–31 <span data-lang="it">Marzo</span><span data-lang="en">March</span> 2026</div>
+        <div class="tl-event"><span data-lang="it">Wash trading CVT — storia di prezzo oracle falsificata a ~$1</span><span data-lang="en">CVT wash trading — oracle price history fabricated to ~$1</span></div>
+        <div class="tl-detail"><span data-lang="it">Tre settimane di attività di mercato falsa per stabilire legittimità oracle</span><span data-lang="en">Three weeks of fake market activity to establish oracle legitimacy</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot blue"></div>
+        <div class="tl-time">23 <span data-lang="it">Marzo</span><span data-lang="en">March</span> 2026</div>
+        <div class="tl-event"><span data-lang="it">4 account durable nonce creati — 2 collegati ai firmatari del Security Council di Drift</span><span data-lang="en">4 durable nonce accounts created — 2 linked to Drift Security Council signers</span></div>
+        <div class="tl-detail"><span data-lang="it">Stesso giorno in cui Circle ha congelato 16 wallet aziendali non correlati. FnYXwy trasferisce 0.01 SOL a Drift Multisig #3.</span><span data-lang="en">Same day Circle froze 16 unrelated business wallets. FnYXwy transfers 0.01 SOL to Drift Multisig #3.</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot red"></div>
+        <div class="tl-time">27 <span data-lang="it">Marzo</span><span data-lang="en">March</span> 2026</div>
+        <div class="tl-event"><span data-lang="it">⚠️ CRITICO: Drift migra il Security Council a multisig 2/5 SENZA timelock</span><span data-lang="en">⚠️ CRITICAL: Drift migrates Security Council to 2/5 multisig WITHOUT timelock</span></div>
+        <div class="tl-detail"><span data-lang="it">5 giorni prima dell'exploit. Nessuno ha indagato chi ha proposto questa migrazione.</span><span data-lang="en">5 days before the exploit. Nobody investigated who proposed this migration.</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot"></div>
+        <div class="tl-time">31 <span data-lang="it">Marzo</span><span data-lang="en">March</span> 2026</div>
+        <div class="tl-event"><span data-lang="it">Wallet aggregatore ETH 0xef4326f4 pre-finanziato da 0xFcC47866 (origine Tornado Cash)</span><span data-lang="en">ETH aggregator wallet 0xef4326f4 pre-funded by 0xFcC47866 (Tornado Cash origin)</span></div>
+        <div class="tl-detail"><span data-lang="it">Infrastruttura di riciclaggio deployata su Ethereum 24h prima dell'attacco</span><span data-lang="en">Laundering infrastructure deployed on Ethereum 24h before attack</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot alert"></div>
+        <div class="tl-time">1 <span data-lang="it">Aprile</span><span data-lang="en">April</span> 2026 · 16:05 UTC</div>
+        <div class="tl-event"><span data-lang="it">Takeover admin — 2 transazioni nonce pre-firmate eseguite in 4 slot</span><span data-lang="en">Admin takeover — 2 pre-signed nonce transactions executed in 4 slots</span></div>
+        <div class="tl-detail"><span data-lang="it">Security Council compromesso via social engineering. Controllo admin trasferito completamente.</span><span data-lang="en">Security Council compromised via social engineering. Complete admin control transferred.</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot alert"></div>
+        <div class="tl-time">1 <span data-lang="it">Aprile</span><span data-lang="en">April</span> 2026 · 16:05–16:17 UTC</div>
+        <div class="tl-event"><span data-lang="it">31 prelievi dai vault — $285M drenati in 12 minuti</span><span data-lang="en">31 vault withdrawals — $285M drained in 12 minutes</span></div>
+        <div class="tl-detail">USDC ($60.4M), JLP ($155M), SOL, cbBTC, WETH, USDT, JUP, FARTCOIN <span data-lang="it">e altro</span><span data-lang="en">and more</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot blue"></div>
+        <div class="tl-time">1 <span data-lang="it">Aprile</span><span data-lang="en">April</span> 2026 · 19:37:01 UTC</div>
+        <div class="tl-event"><span data-lang="it">CCTP Bridge #1 dal satellite v2rNWff: $842,541 USDC → Ethereum</span><span data-lang="en">CCTP Bridge #1 from satellite v2rNWff: $842,541 USDC → Ethereum</span></div>
+        <div class="tl-detail"><span data-lang="it">Destinatario:</span><span data-lang="en">Recipient:</span> <span style="color:var(--amber);font-family:var(--mono)">0xef4326f42f2eb656c58fabf8b1d3298dc2ab80c6</span> · <span data-lang="it">Decodificato dai dati raw dell'istruzione</span><span data-lang="en">Decoded from raw instruction data</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot blue"></div>
+        <div class="tl-time">1 <span data-lang="it">Aprile</span><span data-lang="en">April</span> 2026 · 19:39:15 UTC</div>
+        <div class="tl-event"><span data-lang="it">CCTP Bridge #2 dal satellite v2rNWff: $84,131 USDC → stesso indirizzo ETH</span><span data-lang="en">CCTP Bridge #2 from satellite v2rNWff: $84,131 USDC → same ETH address</span></div>
+        <div class="tl-detail"><span data-lang="it">Totale da questo satellite: $926,673 USDC · Stesso destinatario confermato</span><span data-lang="en">Total from this satellite: $926,673 USDC · Same recipient confirmed</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot"></div>
+        <div class="tl-time">1 <span data-lang="it">Aprile</span><span data-lang="en">April</span> 2026 · 16:30–22:30 UTC</div>
+        <div class="tl-event"><span data-lang="it">$230M USDC bridgiati via Circle CCTP in 6 ore. Zero congelamenti.</span><span data-lang="en">$230M USDC bridged via Circle CCTP over 6 hours. Zero freezes.</span></div>
+        <div class="tl-detail"><span data-lang="it">ZachXBT critica pubblicamente Circle. I fondi si convertono in ETH via Uniswap, Balancer, RelayRouter.</span><span data-lang="en">ZachXBT publicly criticizes Circle. Funds convert to ETH via Uniswap, Balancer, RelayRouter.</span></div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-dot alert"></div>
+        <div class="tl-time">2 <span data-lang="it">Aprile</span><span data-lang="en">April</span> 2026 · 15:45 UTC</div>
+        <div class="tl-event"><span data-lang="it">🔴 ATTIVO: 0xbe2f0354 (wallet infrastrutturale 2019) ancora in movimento</span><span data-lang="en">🔴 ACTIVE: 0xbe2f0354 (2019 infrastructure wallet) still moving funds</span></div>
+        <div class="tl-detail"><span data-lang="it">Transazioni eseguite 30 minuti fa. Operazione di riciclaggio in corso.</span><span data-lang="en">Sent transactions 30 minutes ago. Laundering operation ongoing.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 2: MONEY FLOW -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">02</span>
+      <h2 class="section-title"><span data-lang="it">Flusso Completo dei Fondi — 6 Livelli</span><span data-lang="en">Full Money Flow — 6 Layers Deep</span></h2>
+    </div>
+    <div class="flow-container">
+      <svg id="flowChart"></svg>
+    </div>
+  </section>
+
+  <!-- SECTION 3: CHARTS -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">03</span>
+      <h2 class="section-title"><span data-lang="it">Analisi della Distribuzione dei Fondi</span><span data-lang="en">Fund Distribution Analysis</span></h2>
+    </div>
+    <div class="charts-row">
+      <div class="chart-box">
+        <div class="chart-title"><span data-lang="it">Asset Rubati per Token</span><span data-lang="en">Assets Stolen by Token</span></div>
+        <div class="chart-sub"><span data-lang="it">Distribuzione dei $270.6M confermati on-chain</span><span data-lang="en">Breakdown of $270.6M confirmed on-chain</span></div>
+        <canvas id="assetsChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <div class="chart-title"><span data-lang="it">Distribuzione ETH — Satellite 0xef4326f4</span><span data-lang="en">ETH Distribution — Satellite 0xef4326f4</span></div>
+        <div class="chart-sub"><span data-lang="it">$926K USDC outflow dal wallet hub bridge</span><span data-lang="en">$926K USDC outflow from bridge hub wallet</span></div>
+        <canvas id="distributionChart"></canvas>
+      </div>
+    </div>
+    <div class="charts-row" style="margin-top:2px">
+      <div class="chart-box">
+        <div class="chart-title"><span data-lang="it">Collasso TVL · Drift Protocol</span><span data-lang="en">TVL Collapse · Drift Protocol</span></div>
+        <div class="chart-sub"><span data-lang="it">Da $550M a $23.5M — drawdown del 92.5% in 12 minuti</span><span data-lang="en">From $550M to $23.5M — 92.5% drawdown in 12 minutes</span></div>
+        <canvas id="tvlChart"></canvas>
+      </div>
+      <div class="chart-box">
+        <div class="chart-title"><span data-lang="it">Età dell'Infrastruttura Wallet</span><span data-lang="en">Wallet Infrastructure Age</span></div>
+        <div class="chart-sub"><span data-lang="it">Data prima transazione — l'attaccante ha usato infrastruttura esistente dal 2019</span><span data-lang="en">First transaction dates — attacker used existing 2019 infrastructure</span></div>
+        <canvas id="ageChart"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 4: WALLETS -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">04</span>
+      <h2 class="section-title"><span data-lang="it">Dossier Wallet</span><span data-lang="en">Wallet Dossiers</span></h2>
+    </div>
+
+    <div class="wallets-grid">
+
+      <div class="wallet-card red">
+        <div class="wallet-chain sol">◎ SOLANA</div>
+        <div class="wallet-label">Drift Exploiter 1 <span class="badge known">KNOWN</span></div>
+        <div class="wallet-addr">HkGz4KmoZ7Zmk7HN6ndJ31UJ1qZ2qgwQxgVqQwovpZES</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Saldo</span><span data-lang="en">Balance</span></div><div class="wallet-v red">$538K remaining</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Detiene</span><span data-lang="en">Holds</span></div><div class="wallet-v amber">477K USDY</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Finanziato da</span><span data-lang="en">Funded by</span></div><div class="wallet-v">FnYXwy7qEt...</div></div>
+          <div class="wallet-kv"><div class="wallet-k">Transfers</div><div class="wallet-v">584 total</div></div>
+        </div>
+      </div>
+
+      <div class="wallet-card amber">
+        <div class="wallet-chain sol">◎ SOLANA</div>
+        <div class="wallet-label">CVT Token Creator <span class="badge new"><span data-lang="it">INEDITO</span><span data-lang="en">UNREPORTED</span></span></div>
+        <div class="wallet-addr">FnYXwy7qEtGV4cj1Sf6tht7VDsiytFjJeF9yd4LpAjjx</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k">Tag Solscan</div><div class="wallet-v amber">Token Creator</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Detiene</span><span data-lang="en">Holds</span></div><div class="wallet-v">25M GRIFT</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Finanziato da</span><span data-lang="en">Funded by</span></div><div class="wallet-v red">B87FQZRibFHK</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">⚠️ Ha inviato SOL a</span><span data-lang="en">⚠️ Sent SOL to</span></div><div class="wallet-v red">Drift Multisig #3</div></div>
+        </div>
+      </div>
+
+      <div class="wallet-card blue">
+        <div class="wallet-chain sol">◎ SOLANA</div>
+        <div class="wallet-label"><span data-lang="it">Satellite Distributore</span><span data-lang="en">Satellite Distributor</span> <span class="badge new"><span data-lang="it">INEDITO</span><span data-lang="en">UNREPORTED</span></span></div>
+        <div class="wallet-addr">v2rNWfftzxposVr5UsuTLHczYbBEATKJVEGoPXmKA28</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k">Bridge #1</div><div class="wallet-v">$842,541 USDC</div></div>
+          <div class="wallet-kv"><div class="wallet-k">Bridge #2</div><div class="wallet-v">$84,131 USDC</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Totale bridgiato</span><span data-lang="en">Total bridged</span></div><div class="wallet-v amber">$926,673</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Pre-caricato</span><span data-lang="en">Pre-loaded</span></div><div class="wallet-v"><span data-lang="it">$842K già presenti</span><span data-lang="en">$842K staged in advance</span></div></div>
+        </div>
+      </div>
+
+      <div class="wallet-card red">
+        <div class="wallet-chain sol">◎ SOLANA — UPSTREAM</div>
+        <div class="wallet-label"><span data-lang="it">Funder Sconosciuto</span><span data-lang="en">Unknown Funder</span> <span class="badge new"><span data-lang="it">NON TRACCIATO</span><span data-lang="en">UNTRACED</span></span></div>
+        <div class="wallet-addr">B87FQZ...RibFHK (<span data-lang="it">indirizzo completo non ancora estratto</span><span data-lang="en">full address not yet extracted</span>)</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Ruolo</span><span data-lang="en">Role</span></div><div class="wallet-v red"><span data-lang="it">Funda FnYXwy (CVT creator)</span><span data-lang="en">Funds FnYXwy (CVT creator)</span></div></div>
+          <div class="wallet-kv"><div class="wallet-k">Status</div><div class="wallet-v red"><span data-lang="it">Non tracciato da nessuno</span><span data-lang="en">Not tracked by anyone</span></div></div>
+          <div class="wallet-kv"><div class="wallet-k">Priority</div><div class="wallet-v amber">🔴 <span data-lang="it">MASSIMA</span><span data-lang="en">MAXIMUM</span></div></div>
+        </div>
+      </div>
+
+      <div class="wallet-card blue">
+        <div class="wallet-chain eth">⟠ ETHEREUM</div>
+        <div class="wallet-label">CCTP Bridge Hub <span class="badge new"><span data-lang="it">INEDITO</span><span data-lang="en">UNREPORTED</span></span></div>
+        <div class="wallet-addr">0xef4326f42f2eb656c58fabf8b1d3298dc2ab80c6</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Ricevuto</span><span data-lang="en">Received</span></div><div class="wallet-v">$926,673 via CCTP</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Distribuisce a</span><span data-lang="en">Distributes to</span></div><div class="wallet-v">8+ wallets</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Pre-finanziato</span><span data-lang="en">Pre-funded</span></div><div class="wallet-v amber"><span data-lang="it">31 marzo (24h prima)</span><span data-lang="en">March 31 (24h before)</span></div></div>
+          <div class="wallet-kv"><div class="wallet-k">Funder</div><div class="wallet-v">0xFcC47866 (Tornado Cash)</div></div>
+        </div>
+      </div>
+
+      <div class="wallet-card amber">
+        <div class="wallet-chain eth">⟠ ETHEREUM</div>
+        <div class="wallet-label"><span data-lang="it">Hub Smistamento</span><span data-lang="en">Distribution Hub</span> <span class="badge new"><span data-lang="it">INEDITO</span><span data-lang="en">UNREPORTED</span></span></div>
+        <div class="wallet-addr">0x63242a4ea82847b20e506b63b0e2e2eff0cc6cb0</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k">Outflow</div><div class="wallet-v red">$31.9M USDC</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Usa</span><span data-lang="en">Uses</span></div><div class="wallet-v">Uniswap · Balancer · Relay</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Attivo dal</span><span data-lang="en">Active since</span></div><div class="wallet-v amber"><span data-lang="it">Ottobre 2025</span><span data-lang="en">October 2025</span></div></div>
+          <div class="wallet-kv"><div class="wallet-k">10K+ token tx</div><div class="wallet-v">USDC→ETH swap</div></div>
+        </div>
+      </div>
+
+      <div class="wallet-card green">
+        <div class="wallet-chain eth">⟠ ETHEREUM — <span data-lang="it">ATTIVO ORA</span><span data-lang="en">ACTIVE NOW</span></div>
+        <div class="wallet-label"><span data-lang="it">Operativo Laundering</span><span data-lang="en">Active Laundering Wallet</span> <span class="badge live">LIVE</span></div>
+        <div class="wallet-addr">0x4f82e73edb06d29ff62c91ec8f5ff06571bdeb29</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">ETH presente</span><span data-lang="en">ETH balance</span></div><div class="wallet-v green">16.73 ETH</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Ultima tx</span><span data-lang="en">Last tx</span></div><div class="wallet-v red">02 Apr 09:21 UTC</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Attivo dal</span><span data-lang="en">Active since</span></div><div class="wallet-v amber"><span data-lang="it">Maggio 2023</span><span data-lang="en">May 2023</span></div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Txs totali</span><span data-lang="en">Total txs</span></div><div class="wallet-v">4,712</div></div>
+        </div>
+      </div>
+
+      <div class="wallet-card red">
+        <div class="wallet-chain eth">⟠ ETHEREUM — <span data-lang="it">ATTIVO ORA</span><span data-lang="en">ACTIVE NOW</span></div>
+        <div class="wallet-label"><span data-lang="it">Infrastruttura 2019</span><span data-lang="en">2019 Infrastructure</span> <span class="badge live">LIVE</span></div>
+        <div class="wallet-addr">0xbe2f0354d970265bfc36d383af77f72736b81b54</div>
+        <div class="wallet-meta">
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Ultima tx</span><span data-lang="en">Last tx</span></div><div class="wallet-v red">02 Apr 15:45 UTC</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Attivo dal</span><span data-lang="en">Active since</span></div><div class="wallet-v red"><span data-lang="it">Aprile 2019</span><span data-lang="en">April 2019</span></div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Txs totali</span><span data-lang="en">Total txs</span></div><div class="wallet-v">3,836</div></div>
+          <div class="wallet-kv"><div class="wallet-k"><span data-lang="it">Ping cadenza</span><span data-lang="en">Ping interval</span></div><div class="wallet-v amber">~6 <span data-lang="it">giorni (DPRK C2)</span><span data-lang="en">days (DPRK C2)</span></div></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- SECTION 5: KEY FINDINGS -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">05</span>
+      <h2 class="section-title"><span data-lang="it">Scoperte Forensi Inedite</span><span data-lang="en">Unreported Forensic Findings</span></h2>
+    </div>
+    <div class="findings-list">
+
+      <div class="finding">
+        <div class="finding-num">1</div>
+        <div>
+          <div class="finding-title" data-lang="it">Indirizzo ETH destinatario decodificato dai dati raw dell'istruzione CCTP</div>
+          <div class="finding-title" data-lang="en">ETH recipient address decoded from raw CCTP instruction data</div>
+          <div class="finding-body" data-lang="it">
+            Entrambi i bridge CCTP dal satellite <code>v2rNWff</code> ($842K + $84K) vanno allo stesso indirizzo ETH mai riportato pubblicamente: <strong><code style="color:var(--blue)">0xef4326f42f2eb656c58fabf8b1d3298dc2ab80c6</code></strong>. Estratto decodificando il payload dell'istruzione <code>deposit_for_burn</code> direttamente via Helius RPC. Non presente in nessun report pubblico.
+          </div>
+          <div class="finding-body" data-lang="en">
+            Both CCTP bridges from satellite <code>v2rNWff</code> ($842K + $84K) go to the same previously unreported ETH address: <strong><code style="color:var(--blue)">0xef4326f42f2eb656c58fabf8b1d3298dc2ab80c6</code></strong>. Extracted by decoding the <code>deposit_for_burn</code> instruction payload directly via Helius RPC. Not in any public report.
+          </div>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-num">2</div>
+        <div>
+          <div class="finding-title" data-lang="it">Il wallet CVT Token Creator ha interagito direttamente con Drift Multisig #3</div>
+          <div class="finding-title" data-lang="en">CVT Token Creator wallet directly interacted with Drift Multisig #3</div>
+          <div class="finding-body" data-lang="it">
+            Il wallet <code>FnYXwy7qEt...</code> (taggato da Solscan come "Token Creator" del CVT) ha inviato 0.01 SOL a <strong>Drift Multisig #3</strong> il 23 marzo — lo stesso giorno in cui sono stati creati i durable nonce. Questo è un collegamento on-chain diretto tra l'infrastruttura del token fasullo e la governance di Drift. <strong>Nessun investigatore pubblico ha riportato questa connessione.</strong>
+          </div>
+          <div class="finding-body" data-lang="en">
+            Wallet <code>FnYXwy7qEt...</code> (Solscan-tagged "Token Creator" of CVT) sent 0.01 SOL to <strong>Drift Multisig #3</strong> on March 23 — same day durable nonces were created. This is a direct on-chain link between the fake token infrastructure and Drift governance. <strong>No public investigator has reported this connection.</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-num">3</div>
+        <div>
+          <div class="finding-title" data-lang="it">Infrastruttura di riciclaggio attiva dal 2019 — classico playbook DPRK</div>
+          <div class="finding-title" data-lang="en">Laundering infrastructure active since April 2019 — classic DPRK playbook</div>
+          <div class="finding-body" data-lang="it">
+            Il wallet <code>0xbe2f0354...</code> è stato finanziato per la prima volta nell'<strong>aprile 2019</strong> — infrastruttura preesistente, non costruita per questo attacco. Invia ping di coordinamento al wallet figlio <code>0x9ed9afb6b4ca</code> a intervalli regolari di ~6 giorni (19 marzo, 25 marzo, 2 aprile). Questo pattern di segnale periodico è coerente con l'<strong>infrastruttura C2 del Lazarus Group</strong>.
+          </div>
+          <div class="finding-body" data-lang="en">
+            Wallet <code>0xbe2f0354...</code> was first funded in <strong>April 2019</strong> — pre-existing infrastructure, not built for this attack. It sends coordination pings to child wallet <code>0x9ed9afb6b4ca</code> at regular ~6-day intervals (March 19, March 25, April 2). This periodic signal pattern is consistent with <strong>Lazarus Group C2 infrastructure</strong>.
+          </div>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-num">4</div>
+        <div>
+          <div class="finding-title" data-lang="it">Il satellite aveva $842K USDC pre-caricati PRIMA di ricevere SOL da HkGz4K</div>
+          <div class="finding-title" data-lang="en">Satellite wallet had $842K USDC pre-loaded BEFORE receiving SOL from HkGz4K</div>
+          <div class="finding-body" data-lang="it">
+            <code>v2rNWff</code> deteneva già $842,541 USDC quando HkGz4K gli ha inviato 999 SOL alle 19:36:48 UTC. Il bridge CCTP da $842K è partito alle <strong>19:37:01 UTC — 13 secondi dopo</strong>. Questo significa che l'USDC era stato pre-posizionato da una distribuzione precedente, non swappato in tempo reale. Timeline: pre-carico → HkGz4K invia SOL → bridge immediato.
+          </div>
+          <div class="finding-body" data-lang="en">
+            <code>v2rNWff</code> already held $842,541 USDC when HkGz4K sent it 999 SOL at 19:36:48 UTC. The CCTP bridge of $842K fired at <strong>19:37:01 UTC — 13 seconds later</strong>. This means the USDC was staged in advance from a previous vault drain distribution, not freshly swapped. Timeline: bridge pre-load → HkGz4K sends SOL → immediate second bridge.
+          </div>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-num">5</div>
+        <div>
+          <div class="finding-title" data-lang="it">Relay Protocol (RelayRouterV3) usato come layer bridge secondario</div>
+          <div class="finding-title" data-lang="en">Relay Protocol (RelayRouterV3) used as secondary bridge layer</div>
+          <div class="finding-body" data-lang="it">
+            Il wallet hub <code>0x63242a4e</code> ha instradato USDC significativo attraverso <strong>RelayRouterV3</strong> (<code>0xb92fe925...</code>), non solo Uniswap. Questo aggiunge un hop cross-chain oltre ETH, potenzialmente spostando fondi su Arbitrum, Base o altre L2. Questo layer non è stato menzionato in nessuna analisi pubblica.
+          </div>
+          <div class="finding-body" data-lang="en">
+            Hub wallet <code>0x63242a4e</code> routed significant USDC through <strong>RelayRouterV3</strong> (<code>0xb92fe925...</code>), not just Uniswap. This adds a cross-chain hop beyond ETH, potentially moving funds to Arbitrum, Base or other L2s. This layer was not mentioned in any public analysis.
+          </div>
+        </div>
+      </div>
+
+      <div class="finding">
+        <div class="finding-num">6</div>
+        <div>
+          <div class="finding-title" data-lang="it">Funder upstream B87FQZRibFHK — nodo più profondo non tracciato nel grafo</div>
+          <div class="finding-title" data-lang="en">Upstream funder B87FQZRibFHK — deepest untraced node in the graph</div>
+          <div class="finding-body" data-lang="it">
+            La catena completa è: <strong>B87FQZRibFHK → FnYXwy (CVT creator) → HkGz4K (Exploiter 1)</strong>. <code>B87FQZRibFHK</code> è il nodo più profondo raggiunto e non è stato identificato da nessun ricercatore pubblico. Se questo wallet risale a Tornado Cash o a un CEX con KYC, potrebbe fornire attribuzione.
+          </div>
+          <div class="finding-body" data-lang="en">
+            The full chain goes: <strong>B87FQZRibFHK → FnYXwy (CVT creator) → HkGz4K (Exploiter 1)</strong>. <code>B87FQZRibFHK</code> is the deepest node we've reached and has not been identified by any public researcher. If this wallet traces back to Tornado Cash or a KYC-enabled CEX, it could provide attribution.
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- SECTION 6: OPEN QUESTIONS -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-num">06</span>
+      <h2 class="section-title"><span data-lang="it">Domande Aperte</span><span data-lang="en">Open Questions</span></h2>
+    </div>
+    <div class="questions-grid">
+      <div class="question-card">
+        <div class="question-mark">?</div>
+        <div class="question-text" data-lang="it">Chi ha proposto la migrazione del Security Council al 2/5 il 27 marzo? È stata votata on-chain? L'attaccante potrebbe aver orchestrato anche questo cambiamento di governance?</div>
+        <div class="question-text" data-lang="en">Who proposed the Security Council migration to 2/5 on March 27? Was it voted on-chain? Could the attacker have engineered this governance change too?</div>
+      </div>
+      <div class="question-card">
+        <div class="question-mark">?</div>
+        <div class="question-text" data-lang="it">Cos'è B87FQZRibFHK? Tracciare ancora un livello potrebbe rivelare la vera origine — Tornado Cash, un CEX con KYC o un altro protocollo.</div>
+        <div class="question-text" data-lang="en">What is B87FQZRibFHK? Tracing this one more level could reveal the true origin — Tornado Cash, a CEX with KYC, or another protocol.</div>
+      </div>
+      <div class="question-card">
+        <div class="question-mark">?</div>
+        <div class="question-text" data-lang="it">Perché Circle non ha congelato i $230M di USDC in transito sul suo CCTP durante l'orario lavorativo americano? Circle è stata contattata e non ha agito, o non è mai stata contattata?</div>
+        <div class="question-text" data-lang="en">Why did Circle not freeze the $230M USDC transiting its own CCTP during US business hours? Was Circle contacted and failed to act, or never contacted?</div>
+      </div>
+      <div class="question-card">
+        <div class="question-mark">?</div>
+        <div class="question-text" data-lang="it">Dove sono stati instradati i fondi via RelayRouterV3? Relay bridgia verso le L2 — esiste un cluster di nuovi indirizzi su Arbitrum o Base non ancora identificato?</div>
+        <div class="question-text" data-lang="en">Where are the funds routed via RelayRouterV3? Relay bridges to L2s — is there a fresh address cluster on Arbitrum or Base not yet identified?</div>
+      </div>
+      <div class="question-card">
+        <div class="question-mark">?</div>
+        <div class="question-text" data-lang="it">Il ciclo di ping 0xbe2f0354 → 0x9ed9afb6b4ca si ripete ogni ~6 giorni. Prossimo ping atteso: ~8 aprile. I fondi si muoveranno allora?</div>
+        <div class="question-text" data-lang="en">The 0xbe2f0354 → 0x9ed9afb6b4ca ping cycle fires every ~6 days. Next expected ping: ~April 8. Will funds move then?</div>
+      </div>
+      <div class="question-card">
+        <div class="question-mark">?</div>
+        <div class="question-text" data-lang="it">Quali 2 dei 5 membri del Security Council sono stati ingannati? Sono doxxati? Hanno ricevuto phishing mirato nelle settimane precedenti?</div>
+        <div class="question-text" data-lang="en">Which 2 of the 5 Security Council members were social-engineered? Are they doxxed? Did they receive targeted phishing in the weeks prior?</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <div class="report-footer">
+    <div>λ Forensics · @alex_lamport · Case DRF-2604</div>
+    <div><span data-lang="it">Generato:</span><span data-lang="en">Generated:</span> 2 April 2026 · Sources: Helius RPC · Etherscan API · Solscan · Arkham</div>
+  </div>
+
+</main>
+
+<script>
+// ═══════════════════════════════════════════════════
+// LANGUAGE TOGGLE
+// ═══════════════════════════════════════════════════
+function setLang(lang) {
+  document.body.classList.remove('lang-it', 'lang-en');
+  document.body.classList.add('lang-' + lang);
+  document.getElementById('btn-it').classList.toggle('active', lang === 'it');
+  document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+  localStorage.setItem('lambda-lang', lang);
+}
+// Init: default IT, restore from storage
+const savedLang = localStorage.getItem('lambda-lang') || 'it';
+setLang(savedLang);
+// ═══════════════════════════════════════════════════
+// MONEY FLOW DIAGRAM (D3)
+// ═══════════════════════════════════════════════════
+(function drawFlow() {
+  const svg = d3.select('#flowChart');
+  const W = svg.node().parentElement.clientWidth - 64;
+  const H = 520;
+  svg.attr('viewBox', `0 0 ${W} ${H}`).attr('width', W).attr('height', H);
+
+  const nodes = [
+    // Solana side
+    { id: 'cvt_creator', label: 'FnYXwy', sub: 'CVT Creator', x: 60, y: 120, chain: 'sol', color: '#f39c12', r: 28 },
+    { id: 'b87', label: 'B87FQZ', sub: 'Unknown Funder', x: 60, y: 40, chain: 'sol', color: '#ff3b3b', r: 20 },
+    { id: 'exploiter', label: 'HkGz4K', sub: 'Drift Exploiter 1', x: 200, y: 120, chain: 'sol', color: '#ff3b3b', r: 38 },
+    { id: 'vault', label: 'DRIFT\nVAULTS', sub: '$285M', x: 200, y: 260, chain: 'sol', color: '#00b4d8', r: 45 },
+    { id: 'satellite', label: 'v2rNWff', sub: 'Satellite', x: 340, y: 120, chain: 'sol', color: '#9945FF', r: 26 },
+    { id: 'jup', label: 'Jupiter\nSwap', sub: '999 SOL→$84K', x: 340, y: 220, chain: 'sol', color: '#627EEA', r: 22 },
+    // Bridge
+    { id: 'cctp', label: 'CCTP', sub: 'Circle Bridge', x: 480, y: 160, chain: 'bridge', color: '#00d084', r: 24 },
+    // ETH side
+    { id: 'hub', label: '0xef4326', sub: 'ETH Bridge Hub', x: 620, y: 160, chain: 'eth', color: '#00b4d8', r: 30 },
+    { id: 'dist', label: '0x63242a', sub: 'Hub Smistamento', x: 760, y: 100, chain: 'eth', color: '#f39c12', r: 28 },
+    { id: 'main_settler', label: '0xf48a3f', sub: 'MainnetSettler', x: 760, y: 220, chain: 'eth', color: '#627EEA', r: 22 },
+    { id: 'eoa1', label: '0x4f82e7', sub: 'Operativo ★LIVE', x: 900, y: 80, chain: 'eth', color: '#00d084', r: 24 },
+    { id: 'be2f', label: '0xbe2f03', sub: 'Infra 2019 ★LIVE', x: 1050, y: 80, chain: 'eth', color: '#ff3b3b', r: 26 },
+    { id: 'uniswap', label: 'Uniswap\nBalancer', sub: 'USDC→ETH', x: 900, y: 200, chain: 'eth', color: '#ff007a', r: 22 },
+    { id: 'relay', label: 'Relay\nRouter', sub: 'Cross-chain', x: 900, y: 300, chain: 'eth', color: '#ff007a', r: 20 },
+  ];
+
+  const links = [
+    { s: 'b87', t: 'cvt_creator', label: 'funds', dashed: false },
+    { s: 'cvt_creator', t: 'exploiter', label: 'funds', dashed: false },
+    { s: 'exploiter', t: 'vault', label: 'DRAIN $285M', highlight: true },
+    { s: 'exploiter', t: 'satellite', label: '999 SOL', dashed: false },
+    { s: 'vault', t: 'exploiter', label: '', dashed: true },
+    { s: 'satellite', t: 'jup', label: '', dashed: true },
+    { s: 'jup', t: 'satellite', label: '$84K USDC', dashed: false },
+    { s: 'satellite', t: 'cctp', label: '$926K', highlight: true },
+    { s: 'cctp', t: 'hub', label: 'mint', dashed: false },
+    { s: 'exploiter', t: 'cctp', label: '$230M+', highlight: true },
+    { s: 'hub', t: 'dist', label: '$31.9M', dashed: false },
+    { s: 'hub', t: 'main_settler', label: '$14.2M', dashed: false },
+    { s: 'dist', t: 'eoa1', label: '$12.5M', dashed: false },
+    { s: 'dist', t: 'uniswap', label: 'swap', dashed: true },
+    { s: 'dist', t: 'relay', label: 'bridge', dashed: true },
+    { s: 'eoa1', t: 'be2f', label: 'coord', dashed: false },
+  ];
+
+  // Chain color areas
+  svg.append('rect').attr('x', 0).attr('y', 0).attr('width', 440).attr('height', H)
+    .attr('fill', 'rgba(153,69,255,0.03)').attr('rx', 0);
+  svg.append('rect').attr('x', 440).attr('y', 0).attr('width', 120).attr('height', H)
+    .attr('fill', 'rgba(0,208,132,0.03)');
+  svg.append('rect').attr('x', 560).attr('y', 0).attr('width', W - 560).attr('height', H)
+    .attr('fill', 'rgba(98,126,234,0.03)');
+
+  // Labels
+  svg.append('text').attr('x', 8).attr('y', H - 12).text('◎ SOLANA').attr('fill','#9945FF').attr('font-size', 9).attr('font-family','Share Tech Mono').attr('opacity', 0.6);
+  svg.append('text').attr('x', 452).attr('y', H - 12).text('BRIDGE').attr('fill','#00d084').attr('font-size', 9).attr('font-family','Share Tech Mono').attr('opacity', 0.6);
+  svg.append('text').attr('x', 568).attr('y', H - 12).text('⟠ ETHEREUM').attr('fill','#627EEA').attr('font-size', 9).attr('font-family','Share Tech Mono').attr('opacity', 0.6);
+
+  // Dividers
+  svg.append('line').attr('x1', 440).attr('y1', 0).attr('x2', 440).attr('y2', H).attr('stroke','#1e2d3d').attr('stroke-width', 1).attr('stroke-dasharray','4,4');
+  svg.append('line').attr('x1', 560).attr('y1', 0).attr('x2', 560).attr('y2', H).attr('stroke','#1e2d3d').attr('stroke-width', 1).attr('stroke-dasharray','4,4');
+
+  // Arrowhead marker
+  svg.append('defs').append('marker').attr('id', 'arrow').attr('markerWidth', 6).attr('markerHeight', 6).attr('refX', 6).attr('refY', 3).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,0 L0,6 L6,3 z').attr('fill', '#8899aa');
+  svg.append('defs').append('marker').attr('id', 'arrow-red').attr('markerWidth', 6).attr('markerHeight', 6).attr('refX', 6).attr('refY', 3).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,0 L0,6 L6,3 z').attr('fill', '#ff3b3b');
+
+  const nodeMap = {};
+  nodes.forEach(n => { nodeMap[n.id] = n; });
+
+  // Draw links
+  links.forEach(link => {
+    const s = nodeMap[link.s];
+    const t = nodeMap[link.t];
+    if (!s || !t) return;
+    const dx = t.x - s.x, dy = t.y - s.y;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    const x1 = s.x + (s.r * dx/dist);
+    const y1 = s.y + (s.r * dy/dist);
+    const x2 = t.x - ((t.r+6) * dx/dist);
+    const y2 = t.y - ((t.r+6) * dy/dist);
+
+    const g = svg.append('g');
+    const line = g.append('line')
+      .attr('x1', x1).attr('y1', y1).attr('x2', x2).attr('y2', y2)
+      .attr('stroke', link.highlight ? '#ff3b3b' : '#1e2d3d')
+      .attr('stroke-width', link.highlight ? 2 : 1)
+      .attr('stroke-dasharray', link.dashed ? '4,3' : 'none')
+      .attr('marker-end', link.highlight ? 'url(#arrow-red)' : 'url(#arrow)')
+      .attr('opacity', link.highlight ? 0.9 : 0.5);
+
+    if (link.label && link.highlight) {
+      const mx = (x1+x2)/2, my = (y1+y2)/2;
+      g.append('rect').attr('x', mx-20).attr('y', my-9).attr('width', 40).attr('height', 14).attr('fill', 'rgba(255,59,59,0.15)').attr('rx', 2);
+      g.append('text').attr('x', mx).attr('y', my+2).attr('text-anchor','middle').attr('fill','#ff3b3b').attr('font-size', 8).attr('font-family','Share Tech Mono').text(link.label);
+    } else if (link.label) {
+      const mx = (x1+x2)/2, my = (y1+y2)/2;
+      g.append('text').attr('x', mx).attr('y', my-4).attr('text-anchor','middle').attr('fill','#8899aa').attr('font-size', 8).attr('font-family','Share Tech Mono').text(link.label);
+    }
+  });
+
+  // Draw nodes
+  nodes.forEach(n => {
+    const g = svg.append('g').attr('cursor', 'pointer')
+      .on('mouseover', function() {
+        d3.select(this).select('circle').attr('filter', `drop-shadow(0 0 8px ${n.color})`);
+      })
+      .on('mouseout', function() {
+        d3.select(this).select('circle').attr('filter', 'none');
+      });
+
+    // Glow ring for live wallets
+    if (n.sub && n.sub.includes('LIVE')) {
+      g.append('circle').attr('cx', n.x).attr('cy', n.y).attr('r', n.r+6)
+        .attr('fill', 'none').attr('stroke', n.color).attr('stroke-width', 1)
+        .attr('opacity', 0.3).attr('stroke-dasharray', '3,3');
+    }
+
+    g.append('circle').attr('cx', n.x).attr('cy', n.y).attr('r', n.r)
+      .attr('fill', 'rgba(13,17,23,0.95)').attr('stroke', n.color).attr('stroke-width', n.sub?.includes('LIVE') ? 2 : 1.5);
+
+    const lines = n.label.split('\n');
+    lines.forEach((line, i) => {
+      g.append('text').attr('x', n.x).attr('y', n.y + (i - (lines.length-1)/2)*12)
+        .attr('text-anchor','middle').attr('dominant-baseline','middle')
+        .attr('fill', n.color).attr('font-size', n.r > 35 ? 11 : 9)
+        .attr('font-family','Share Tech Mono').attr('font-weight','bold').text(line);
+    });
+
+    if (n.sub) {
+      g.append('text').attr('x', n.x).attr('y', n.y + n.r + 14)
+        .attr('text-anchor','middle').attr('fill','#8899aa').attr('font-size', 9)
+        .attr('font-family','Share Tech Mono').text(n.sub);
+    }
+  });
+
+  // Live pulse animation
+  svg.selectAll('circle').filter(function() {
+    return d3.select(this.parentNode).select('text').filter(function() { return d3.select(this).text().includes('LIVE'); }).size() > 0;
+  }).each(function() {
+    const el = d3.select(this);
+    (function pulse() {
+      el.transition().duration(1000).attr('opacity', 0.6)
+        .transition().duration(1000).attr('opacity', 1).on('end', pulse);
+    })();
+  });
+})();
+
+// ═══════════════════════════════════════════════════
+// CHART 1: Assets stolen
+// ═══════════════════════════════════════════════════
+new Chart(document.getElementById('assetsChart'), {
+  type: 'doughnut',
+  data: {
+    labels: ['JLP ($155M)', 'USDC ($60.4M)', 'SOL ($20M)', 'USDT ($5.65M)', 'FARTCOIN ($4.1M)', 'WBTC ($4.4M)', 'Altri ($20.5M)'],
+    datasets: [{
+      data: [155, 60.4, 20, 5.65, 4.1, 4.4, 20.5],
+      backgroundColor: ['#ff3b3b','#f39c12','#9945FF','#00b4d8','#00d084','#627EEA','#1e2d3d'],
+      borderColor: '#080b0f',
+      borderWidth: 2,
+    }]
+  },
+  options: {
+    plugins: {
+      legend: { labels: { color: '#8899aa', font: { family: 'DM Mono', size: 11 }, boxWidth: 12 } }
+    },
+    cutout: '60%',
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// CHART 2: Bridge hub distribution
+// ═══════════════════════════════════════════════════
+new Chart(document.getElementById('distributionChart'), {
+  type: 'bar',
+  data: {
+    labels: ['0x63242a\n($31.9M)', '0xf48a3f\nSettler ($14.2M)', '0xa6e941\n($4.3M)', '0x7baa29\n($3.2M)', '0xcd6b98\n($91K)', 'Others'],
+    datasets: [{
+      label: 'USDC outflow',
+      data: [31970, 14223, 4321, 3209, 91, 165],
+      backgroundColor: ['#ff3b3b','#f39c12','#9945FF','#00b4d8','#627EEA','#1e2d3d'],
+      borderRadius: 2,
+    }]
+  },
+  options: {
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#8899aa', font: { family: 'DM Mono', size: 10 } }, grid: { color: '#1e2d3d' } },
+      y: { ticks: { color: '#8899aa', font: { family: 'DM Mono', size: 10 }, callback: v => '$'+v.toLocaleString() }, grid: { color: '#1e2d3d' } }
+    }
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// CHART 3: TVL collapse
+// ═══════════════════════════════════════════════════
+new Chart(document.getElementById('tvlChart'), {
+  type: 'line',
+  data: {
+    labels: ['16:00','16:03','16:06','16:09','16:12','16:15','16:17','17:00','18:00','02 Apr'],
+    datasets: [{
+      label: 'Drift TVL ($M)',
+      data: [550, 510, 430, 300, 180, 80, 23.5, 23.5, 23.5, 23.5],
+      borderColor: '#ff3b3b',
+      backgroundColor: 'rgba(255,59,59,0.08)',
+      fill: true,
+      tension: 0.4,
+      pointBackgroundColor: '#ff3b3b',
+      pointRadius: 4,
+    }]
+  },
+  options: {
+    plugins: { legend: { labels: { color: '#8899aa', font: { family: 'DM Mono', size: 11 } } } },
+    scales: {
+      x: { ticks: { color: '#8899aa', font: { family: 'DM Mono', size: 10 } }, grid: { color: '#1e2d3d' } },
+      y: { ticks: { color: '#8899aa', font: { family: 'DM Mono', size: 10 }, callback: v => '$'+v+'M' }, grid: { color: '#1e2d3d' } }
+    }
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// CHART 4: Wallet ages
+// ═══════════════════════════════════════════════════
+new Chart(document.getElementById('ageChart'), {
+  type: 'bar',
+  data: {
+    labels: ['0xbe2f03\n(2019)', '0x4f82e7\n(2023)', '0x63242a\n(Oct 2025)', '0xef4326\n(Mar 2026)', 'HkGz4K\n(Mar 2026)', 'v2rNWff\n(Apr 2026)'],
+    datasets: [{
+      label: 'Months active',
+      data: [84, 35, 6, 0.5, 0.3, 0.1],
+      backgroundColor: ['#ff3b3b','#ff3b3b','#f39c12','#627EEA','#9945FF','#9945FF'],
+      borderRadius: 2,
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#8899aa', font: { family: 'DM Mono', size: 10 }, callback: v => v+'mo' }, grid: { color: '#1e2d3d' } },
+      y: { ticks: { color: '#8899aa', font: { family: 'DM Mono', size: 10 } }, grid: { color: '#1e2d3d' } }
+    }
+  }
+});
+
+// Animate timeline items
+const items = document.querySelectorAll('.tl-item');
+items.forEach((el, i) => { el.style.animationDelay = `${i * 0.06}s`; });
+</script>
+</body>
+</html>
